@@ -1,8 +1,7 @@
-import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const Map01());
@@ -26,112 +25,206 @@ class AppMap extends StatefulWidget {
 
 class _AppMapState extends State<AppMap> {
   late GoogleMapController map;
-
   LatLng point = const LatLng(16.1872, 103.3045);
-  double currentZoom = 10.0;
+  double currentZoom = 20.0;
 
   final TextEditingController _latCtrl = TextEditingController();
   final TextEditingController _lngCtrl = TextEditingController();
 
   final Set<Marker> _markers = {};
   final Set<Polyline> _polylines = {};
+  final List<LatLng> _trailPoints = [];
+  double _totalDistance = 0.0; // เพิ่มตัวแปรเก็บระยะทางรวม
 
-  final String googleApiKey = "AIzaSyBzuPglEyOj44epyY18uUJmxGdI3LBNSdQ";
+  StreamSubscription<Position>? _positionStream;
 
-  void createGoogleMap(GoogleMapController varMap) {
-    map = varMap;
-    _setMarker(point);
-  }
+  LatLng? _destinationLatLng;
+  BitmapDescriptor? _carIcon;
 
-  void _setMarker(LatLng target) {
-    setState(() {
-      _markers
-        ..clear()
-        ..add(
-          Marker(
-            markerId: const MarkerId('marker'),
-            position: target,
-            infoWindow: const InfoWindow(title: 'ตำแหน่งเป้าหมาย'),
-          ),
-        );
+  @override
+  void initState() {
+    super.initState();
+    _checkPermission();
+
+    // ดึงตำแหน่งล่าสุดทันทีตอนเปิดแอป
+    Geolocator.getCurrentPosition(
+      locationSettings: const LocationSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+      ),
+    ).then((pos) {
+      _updatePosition(pos, moveCamera: true);
     });
+
+    // Subscribe stream ต่อเนื่อง
+    _positionStream =
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.bestForNavigation,
+            distanceFilter: 0,
+          ),
+        ).listen((Position pos) {
+          _updatePosition(pos);
+        });
   }
 
-  double? _parseNum(String s) {
-    try {
-      return double.parse(s.trim().replaceAll(',', '.'));
-    } catch (_) {
-      return null;
-    }
+  // ฟังก์ชันใหม่: อัปเดต Marker รถแบบเรียบ
+  void _updateMarkerPosition(LatLng newPos) {
+    final oldMarker = _markers.firstWhere(
+      (m) => m.markerId.value == 'current',
+      orElse: () =>
+          Marker(markerId: const MarkerId('current'), position: newPos),
+    );
+
+    final updatedMarker = oldMarker.copyWith(
+      positionParam: newPos,
+      iconParam: BitmapDescriptor.defaultMarkerWithHue(
+        BitmapDescriptor.hueBlue,
+      ), // สีน้ำเงิน
+    );
+
+    _markers.removeWhere((m) => m.markerId.value == 'current');
+    _markers.add(updatedMarker);
   }
 
-  Future<void> _search() async {
-    final lat = _parseNum(_latCtrl.text);
-    final lng = _parseNum(_lngCtrl.text);
+  void _updatePosition(Position pos, {bool moveCamera = false}) {
+    final current = LatLng(pos.latitude, pos.longitude);
 
-    if (lat == null || lng == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('กรุณากรอกค่า lat/lng ให้ถูกต้อง')),
+    // อัปเดต Marker รถแบบเรียบ
+    _updateMarkerPosition(current);
+
+    // update trail
+    if (_trailPoints.isNotEmpty) {
+      final last = _trailPoints.last;
+      final dist = Geolocator.distanceBetween(
+        last.latitude,
+        last.longitude,
+        current.latitude,
+        current.longitude,
       );
-      return;
+      _totalDistance += dist;
     }
+    _trailPoints.add(current);
+    if (_trailPoints.length > 50) _trailPoints.removeAt(0);
 
-    final target = LatLng(lat, lng);
-    _setMarker(target);
-    currentZoom = 15;
-
-    await map.animateCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(target: target, zoom: currentZoom),
+    _polylines.removeWhere((p) => p.polylineId.value == 'trail');
+    _polylines.add(
+      Polyline(
+        polylineId: const PolylineId('trail'),
+        color: Colors.green,
+        width: 4,
+        points: List.from(_trailPoints),
       ),
     );
 
-    await _drawRoute(target);
-  }
-
-  Future<void> _goCurrentLocation() async {
-    bool serviceEnabled;
-    LocationPermission permission;
-
-    serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('กรุณาเปิด GPS')));
-      return;
+    // **ไม่เคลื่อนกล้องอัตโนมัติอีกต่อไป**
+    if (moveCamera) {
+      map.animateCamera(
+        CameraUpdate.newLatLng(current),
+      ); // เฉพาะตอนกดปุ่มซ้ายบน
     }
 
-    permission = await Geolocator.checkPermission();
+    _latCtrl.text = pos.latitude.toStringAsFixed(6);
+    _lngCtrl.text = pos.longitude.toStringAsFixed(6);
+
+    // เช็คใกล้ Marker ปลายทาง
+    if (_destinationLatLng != null) {
+      final dist = Geolocator.distanceBetween(
+        current.latitude,
+        current.longitude,
+        _destinationLatLng!.latitude,
+        _destinationLatLng!.longitude,
+      );
+
+      if (dist < 10) {
+        _markers.removeWhere((m) => m.markerId.value == 'destination');
+        _destinationLatLng = null;
+
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('ถึงจุดหมายแล้ว!'),
+            content: const Text('คุณได้เดินทางมาถึงจุดหมายเรียบร้อยแล้ว'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('ปิด'),
+              ),
+            ],
+          ),
+        );
+      }
+    }
+
+    setState(() {});
+  }
+
+  void _clearMarkersAndTrail() {
+    setState(() {
+      _markers.removeWhere((m) => m.markerId.value == 'destination');
+      _trailPoints.clear();
+      _polylines.removeWhere((p) => p.polylineId.value == 'trail');
+      _destinationLatLng = null;
+      _totalDistance = 0.0; // reset ระยะทางด้วย
+    });
+  }
+
+  Future<void> _checkPermission() async {
+    LocationPermission permission = await Geolocator.checkPermission();
+
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('ไม่ได้รับสิทธิ์เข้าถึงตำแหน่ง')),
-        );
-        return;
-      }
     }
 
     if (permission == LocationPermission.deniedForever) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('แอปไม่ได้รับสิทธิ์เข้าถึงตำแหน่งถาวร')),
+        const SnackBar(
+          content: Text('กรุณาเปิด Permission Location ใน Settings'),
+        ),
       );
       return;
     }
 
-    final pos = await Geolocator.getCurrentPosition();
-    final current = LatLng(pos.latitude, pos.longitude);
+    if (permission == LocationPermission.whileInUse) {
+      permission =
+          await Geolocator.requestPermission(); // ขอ background ถ้าได้แค่ whileInUse
+    }
+  }
 
-    _setMarker(current);
+  Future<void> _goCurrentLocation() async {
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.bestForNavigation,
+        ),
+      );
 
-    await map.animateCamera(
-      CameraUpdate.newCameraPosition(
-        CameraPosition(target: current, zoom: currentZoom),
-      ),
-    );
+      _updatePosition(pos, moveCamera: true); // จะ animate กล้องตอนกดปุ่ม
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
 
-    _latCtrl.text = pos.latitude.toStringAsFixed(6);
-    _lngCtrl.text = pos.longitude.toStringAsFixed(6);
+  void createGoogleMap(GoogleMapController varMap) {
+    map = varMap;
+  }
+
+  void _setMarker(LatLng target, {bool isCurrent = false}) {
+    setState(() {
+      if (isCurrent) return;
+
+      _markers.removeWhere((m) => m.markerId.value == 'destination');
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('destination'),
+          position: target,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          infoWindow: const InfoWindow(title: 'ปลายทาง'),
+        ),
+      );
+      _destinationLatLng = target;
+    });
   }
 
   void _zoomIn() {
@@ -144,100 +237,9 @@ class _AppMapState extends State<AppMap> {
     map.animateCamera(CameraUpdate.zoomTo(currentZoom));
   }
 
-  // 🔹 ฟังก์ชันวาดเส้นทางจากตำแหน่งปัจจุบันไปยัง target
-  Future<void> _drawRoute(LatLng target) async {
-    final pos = await Geolocator.getCurrentPosition();
-    final origin = "${pos.latitude},${pos.longitude}";
-    final destination = "${target.latitude},${target.longitude}";
-
-    final url =
-        "https://maps.googleapis.com/maps/api/directions/json?origin=$origin&destination=$destination&key=$googleApiKey";
-
-    final response = await http.get(Uri.parse(url));
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-
-      if (data['status'] == 'OK') {
-        final points = data['routes'][0]['overview_polyline']['points'];
-        final polylineCoordinates = _decodePolyline(points);
-
-        setState(() {
-          _polylines.clear();
-          _polylines.add(
-            Polyline(
-              polylineId: const PolylineId("route"),
-              color: Colors.blue,
-              width: 5,
-              points: polylineCoordinates,
-            ),
-          );
-        });
-
-        // ซูมกล้องให้ครอบคลุมเส้นทาง
-        final bounds = _boundsFromLatLngList(polylineCoordinates);
-        map.animateCamera(CameraUpdate.newLatLngBounds(bounds, 50));
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("ไม่พบเส้นทาง: ${data['status']}")),
-        );
-      }
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("HTTP error: ${response.statusCode}")),
-      );
-    }
-  }
-
-  // แปลง encoded polyline เป็น LatLng
-  List<LatLng> _decodePolyline(String encoded) {
-    List<LatLng> poly = [];
-    int index = 0, len = encoded.length;
-    int lat = 0, lng = 0;
-
-    while (index < len) {
-      int b, shift = 0, result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1f) << shift;
-        shift += 5;
-      } while (b >= 0x20);
-      int dlat = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lat += dlat;
-
-      shift = 0;
-      result = 0;
-      do {
-        b = encoded.codeUnitAt(index++) - 63;
-        result |= (b & 0x1f) << shift;
-        shift += 5;
-      } while (b >= 0x20);
-      int dlng = ((result & 1) != 0 ? ~(result >> 1) : (result >> 1));
-      lng += dlng;
-
-      poly.add(LatLng(lat / 1E5, lng / 1E5));
-    }
-
-    return poly;
-  }
-
-  // สร้าง LatLngBounds ครอบเส้นทาง
-  LatLngBounds _boundsFromLatLngList(List<LatLng> list) {
-    double x0 = list.first.latitude;
-    double x1 = list.first.latitude;
-    double y0 = list.first.longitude;
-    double y1 = list.first.longitude;
-
-    for (LatLng latLng in list) {
-      if (latLng.latitude > x1) x1 = latLng.latitude;
-      if (latLng.latitude < x0) x0 = latLng.latitude;
-      if (latLng.longitude > y1) y1 = latLng.longitude;
-      if (latLng.longitude < y0) y0 = latLng.longitude;
-    }
-    return LatLngBounds(southwest: LatLng(x0, y0), northeast: LatLng(x1, y1));
-  }
-
   @override
   void dispose() {
+    _positionStream?.cancel();
     _latCtrl.dispose();
     _lngCtrl.dispose();
     super.dispose();
@@ -249,11 +251,19 @@ class _AppMapState extends State<AppMap> {
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.my_location),
-          onPressed: _goCurrentLocation,
+          onPressed:
+              _goCurrentLocation, // ฟังก์ชันนี้จะอัปเดตกล้องไปตำแหน่ง Marker
         ),
-        title: const Text("แสดงแผนที่"),
+
+        title: const Text("GPS"),
         centerTitle: true,
         backgroundColor: Colors.blue,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_sharp),
+            onPressed: _clearMarkersAndTrail,
+          ),
+        ],
       ),
       body: Stack(
         children: [
@@ -267,11 +277,10 @@ class _AppMapState extends State<AppMap> {
             polylines: _polylines,
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
-            onTap: (LatLng tappedPoint) async {
+            onTap: (LatLng tappedPoint) {
               _setMarker(tappedPoint);
               _latCtrl.text = tappedPoint.latitude.toStringAsFixed(6);
               _lngCtrl.text = tappedPoint.longitude.toStringAsFixed(6);
-              await _drawRoute(tappedPoint);
             },
           ),
           Positioned(
@@ -279,7 +288,7 @@ class _AppMapState extends State<AppMap> {
             left: 12,
             right: 12,
             child: Card(
-              color: Colors.pink,
+              color: Colors.blue,
               elevation: 4,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -292,57 +301,51 @@ class _AppMapState extends State<AppMap> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    Center(
+                      child: Text(
+                        'ตำแหน่งปัจจุบัน',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
                     Row(
                       children: [
                         Expanded(
-                          child: TextField(
-                            controller: _latCtrl,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                              signed: true,
-                            ),
-                            textInputAction: TextInputAction.next,
-                            decoration: const InputDecoration(
-                              labelText: 'ละติจูด (lat)',
-                              hintText: 'เช่น 16.1872',
+                          child: Text(
+                            'ละติจูด: ${_latCtrl.text}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
                         const SizedBox(width: 12),
                         Expanded(
-                          child: TextField(
-                            controller: _lngCtrl,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
-                              signed: true,
-                            ),
-                            textInputAction: TextInputAction.done,
-                            decoration: const InputDecoration(
-                              labelText: 'ลองจิจูด (lng)',
-                              hintText: 'เช่น 103.3045',
+                          child: Text(
+                            'ลองจิจูด: ${_lngCtrl.text}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _search,
-                        icon: const Icon(Icons.search),
-                        label: const Text('ค้นหา'),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          backgroundColor: const Color.fromARGB(
-                            255,
-                            213,
-                            182,
-                            57,
+                    if (_destinationLatLng != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8.0),
+                        child: Text(
+                          "ปลายทาง: ${_destinationLatLng!.latitude.toStringAsFixed(6)}, ${_destinationLatLng!.longitude.toStringAsFixed(6)}",
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
                           ),
                         ),
                       ),
-                    ),
                   ],
                 ),
               ),
@@ -369,6 +372,23 @@ class _AppMapState extends State<AppMap> {
                   child: const Icon(Icons.remove),
                 ),
               ],
+            ),
+          ),
+          Positioned(
+            top: 120,
+            left: 12,
+            child: Card(
+              color: Colors.black54,
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text(
+                  "เคลื่อนที่ไปแล้ว: ${_totalDistance.toStringAsFixed(1)} เมตร",
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
             ),
           ),
         ],
