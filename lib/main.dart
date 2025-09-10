@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const Map01());
@@ -65,6 +67,49 @@ class _AppMapState extends State<AppMap> {
         ).listen((Position pos) {
           _updatePosition(pos);
         });
+  }
+
+  // ✅ ฟังก์ชันเรียกเส้นทางจาก Openrouteservice
+  Future<List<LatLng>> getRouteORS(LatLng start, LatLng end) async {
+    const apiKey =
+        "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImQ2YjA5ZWI5YTA3ZDQ0NzM5MzA4OGRhYmM0NTY1M2NjIiwiaCI6Im11cm11cjY0In0="; // 🔑 ใส่ API Key ของคุณ
+    final url = Uri.parse(
+      "https://api.openrouteservice.org/v2/directions/driving-car"
+      "?api_key=$apiKey&start=${start.longitude},${start.latitude}&end=${end.longitude},${end.latitude}",
+    );
+
+    final response = await http.get(url);
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      final coords = data["features"][0]["geometry"]["coordinates"];
+
+      return coords.map<LatLng>((c) => LatLng(c[1], c[0])).toList();
+    } else {
+      throw Exception("Failed to fetch route: ${response.body}");
+    }
+  }
+
+  // ✅ ฟังก์ชันวาดเส้นทาง
+  void _drawRoute(LatLng start, LatLng end) async {
+    try {
+      final routePoints = await getRouteORS(start, end);
+
+      setState(() {
+        // ลบ polyline เก่าของ route (ไม่กระทบ trail)
+        _polylines.removeWhere((p) => p.polylineId.value == "route");
+
+        _polylines.add(
+          Polyline(
+            polylineId: const PolylineId("route"),
+            color: Colors.red,
+            width: 5,
+            points: routePoints,
+          ),
+        );
+      });
+    } catch (e) {
+      print("Error fetching route: $e");
+    }
   }
 
   // ฟังก์ชันใหม่: อัปเดต Marker รถแบบเรียบ
@@ -138,6 +183,9 @@ class _AppMapState extends State<AppMap> {
       if (dist < 10) {
         _markers.removeWhere((m) => m.markerId.value == 'destination');
         _destinationLatLng = null;
+        _polylines.removeWhere(
+          (p) => p.polylineId.value == 'route',
+        ); // ✅ ลบเส้น ORS
 
         showDialog(
           context: context,
@@ -163,6 +211,9 @@ class _AppMapState extends State<AppMap> {
       _markers.removeWhere((m) => m.markerId.value == 'destination');
       _trailPoints.clear();
       _polylines.removeWhere((p) => p.polylineId.value == 'trail');
+      _polylines.removeWhere(
+        (p) => p.polylineId.value == 'route',
+      ); // ✅ ลบเส้นทาง ORS ด้วย
       _destinationLatLng = null;
       _totalDistance = 0.0; // reset ระยะทางด้วย
     });
@@ -225,6 +276,11 @@ class _AppMapState extends State<AppMap> {
       );
       _destinationLatLng = target;
     });
+
+    // ✅ ถ้ามีตำแหน่งปัจจุบันแล้ว → วาดเส้นทาง ORS
+    if (_trailPoints.isNotEmpty) {
+      _drawRoute(_trailPoints.last, target);
+    }
   }
 
   void _zoomIn() {
