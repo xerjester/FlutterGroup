@@ -36,7 +36,7 @@ class _AppMapState extends State<AppMap> {
   final Set<Marker> _markers = {};
   final Set<Polyline> _polylines = {};
   final List<LatLng> _trailPoints = [];
-  double _totalDistance = 0.0; // เพิ่มตัวแปรเก็บระยะทางรวม
+  double _totalDistance = 0.0; // ตัวแปรเก็บระยะทางรวม
 
   StreamSubscription<Position>? _positionStream;
 
@@ -57,7 +57,6 @@ class _AppMapState extends State<AppMap> {
       _updatePosition(pos, moveCamera: true);
     });
 
-    // Subscribe stream ต่อเนื่อง
     _positionStream =
         Geolocator.getPositionStream(
           locationSettings: const LocationSettings(
@@ -69,7 +68,7 @@ class _AppMapState extends State<AppMap> {
         });
   }
 
-  // ✅ ฟังก์ชันเรียกเส้นทางจาก Openrouteservice
+  // ฟังก์ชันเรียกเส้นทางจาก Openrouteservice
   Future<List<LatLng>> getRouteORS(LatLng start, LatLng end) async {
     const apiKey =
         "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImQ2YjA5ZWI5YTA3ZDQ0NzM5MzA4OGRhYmM0NTY1M2NjIiwiaCI6Im11cm11cjY0In0="; // 🔑 ใส่ API Key ของคุณ
@@ -89,13 +88,12 @@ class _AppMapState extends State<AppMap> {
     }
   }
 
-  // ✅ ฟังก์ชันวาดเส้นทาง
+  // ฟังก์ชันวาดเส้นทาง
   void _drawRoute(LatLng start, LatLng end) async {
     try {
       final routePoints = await getRouteORS(start, end);
 
       setState(() {
-        // ลบ polyline เก่าของ route (ไม่กระทบ trail)
         _polylines.removeWhere((p) => p.polylineId.value == "route");
 
         _polylines.add(
@@ -112,7 +110,6 @@ class _AppMapState extends State<AppMap> {
     }
   }
 
-  // ฟังก์ชันใหม่: อัปเดต Marker รถแบบเรียบ
   void _updateMarkerPosition(LatLng newPos) {
     final oldMarker = _markers.firstWhere(
       (m) => m.markerId.value == 'current',
@@ -124,7 +121,7 @@ class _AppMapState extends State<AppMap> {
       positionParam: newPos,
       iconParam: BitmapDescriptor.defaultMarkerWithHue(
         BitmapDescriptor.hueBlue,
-      ), // สีน้ำเงิน
+      ),
     );
 
     _markers.removeWhere((m) => m.markerId.value == 'current');
@@ -134,7 +131,6 @@ class _AppMapState extends State<AppMap> {
   void _updatePosition(Position pos, {bool moveCamera = false}) {
     final current = LatLng(pos.latitude, pos.longitude);
 
-    // อัปเดต Marker รถแบบเรียบ
     _updateMarkerPosition(current);
 
     // update trail
@@ -161,17 +157,13 @@ class _AppMapState extends State<AppMap> {
       ),
     );
 
-    // **ไม่เคลื่อนกล้องอัตโนมัติอีกต่อไป**
     if (moveCamera) {
-      map.animateCamera(
-        CameraUpdate.newLatLng(current),
-      ); // เฉพาะตอนกดปุ่มซ้ายบน
+      map.animateCamera(CameraUpdate.newLatLng(current));
     }
 
     _latCtrl.text = pos.latitude.toStringAsFixed(6);
     _lngCtrl.text = pos.longitude.toStringAsFixed(6);
 
-    // เช็คใกล้ Marker ปลายทาง
     if (_destinationLatLng != null) {
       final dist = Geolocator.distanceBetween(
         current.latitude,
@@ -185,7 +177,7 @@ class _AppMapState extends State<AppMap> {
         _destinationLatLng = null;
         _polylines.removeWhere(
           (p) => p.polylineId.value == 'route',
-        ); // ✅ ลบเส้น ORS
+        ); // ลบเส้น ORS
 
         showDialog(
           context: context,
@@ -200,6 +192,10 @@ class _AppMapState extends State<AppMap> {
             ],
           ),
         );
+      } else {
+        if (_destinationLatLng != null) {
+          _drawRoute(current, _destinationLatLng!);
+        }
       }
     }
 
@@ -213,9 +209,9 @@ class _AppMapState extends State<AppMap> {
       _polylines.removeWhere((p) => p.polylineId.value == 'trail');
       _polylines.removeWhere(
         (p) => p.polylineId.value == 'route',
-      ); // ✅ ลบเส้นทาง ORS ด้วย
+      ); // ลบเส้นทาง ORS ด้วย
       _destinationLatLng = null;
-      _totalDistance = 0.0; // reset ระยะทางด้วย
+      _totalDistance = 0.0; // reset ระยะทาง
     });
   }
 
@@ -236,8 +232,7 @@ class _AppMapState extends State<AppMap> {
     }
 
     if (permission == LocationPermission.whileInUse) {
-      permission =
-          await Geolocator.requestPermission(); // ขอ background ถ้าได้แค่ whileInUse
+      permission = await Geolocator.requestPermission();
     }
   }
 
@@ -249,7 +244,7 @@ class _AppMapState extends State<AppMap> {
         ),
       );
 
-      _updatePosition(pos, moveCamera: true); // จะ animate กล้องตอนกดปุ่ม
+      _updatePosition(pos, moveCamera: true); // animate กล้องตอนกดปุ่ม
     } catch (e) {
       ScaffoldMessenger.of(
         context,
@@ -277,7 +272,7 @@ class _AppMapState extends State<AppMap> {
       _destinationLatLng = target;
     });
 
-    // ✅ ถ้ามีตำแหน่งปัจจุบันแล้ว → วาดเส้นทาง ORS
+    // ถ้ามีตำแหน่งปัจจุบันแล้ว → วาดเส้นทาง ORS
     if (_trailPoints.isNotEmpty) {
       _drawRoute(_trailPoints.last, target);
     }
@@ -307,8 +302,7 @@ class _AppMapState extends State<AppMap> {
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.my_location),
-          onPressed:
-              _goCurrentLocation, // ฟังก์ชันนี้จะอัปเดตกล้องไปตำแหน่ง Marker
+          onPressed: _goCurrentLocation, // อัปเดตกล้องไปตำแหน่ง Marker
         ),
 
         title: const Text("GPS"),
